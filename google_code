@@ -1,0 +1,325 @@
+import ee
+
+# Authenticate Google Earth Engine
+ee.Authenticate()
+
+## Code Block 2
+
+# Change "emerge-lessons" to your project ID if it is different
+ee.Initialize(project="globe-486014")
+
+lc = ee.ImageCollection('MODIS/061/MCD12Q1')
+
+# Import the MODIS land surface temperature collection.
+lst = ee.ImageCollection('MODIS/061/MOD11A1')
+
+# Import the USGS ground elevation image.
+elv = ee.Image('USGS/SRTMGL1_003')
+
+import folium
+import geemap
+
+map = folium.Map(location=[25.663363, -80.307652], tiles="Cartodb dark_matter", zoom_start=9)
+display(map)
+
+#homestead
+u_lon = 25.47
+u_lat = -80.48
+u_poi = ee.Geometry.Point(u_lon, u_lat)
+
+#miamiiii
+r_lon = 25.76
+r_lat = -80.19
+r_poi = ee.Geometry.Point(r_lon, r_lat)
+
+# Import libraries
+import pandas as pd                           # For working with data
+pd.set_option("display.max_columns", None)    # Lets us see all columns of the data instead of just a preview
+import geopandas as gpd                       # For working with spatial data
+import numpy as np                            # For working with numbers
+from datetime import date                     # For working with dates
+import matplotlib.pyplot as plt               # For making graphs
+from matplotlib.colors import to_rgb          # For getting colors
+import branca.colormap as cm                  # For creating color scales
+import seaborn as sns                         # For more options to load colors and create plots
+import folium                                 # For creating interactive maps
+from PIL import Image                         # For getting and displaying images from links
+import requests                               # For getting information from links
+from io import BytesIO                        # For working with types of input and output
+
+state_name = "Florida"
+
+counties = gpd.read_file('https://github.com/geo-di-lab/emerge-lessons/raw/refs/heads/main/docs/data/us_counties.zip').to_crs('EPSG:4326')
+
+state_counties = counties.loc[counties['STATE_NAME'] == state_name]
+
+state = state_counties[['geometry']].dissolve()
+
+# Create empty map zoomed to the state
+map = folium.Map(tiles="Cartodb dark_matter")
+
+# Read Mosquito Habitat Mapper Data into df_mhm
+df_mhm = pd.read_csv('GLOBEMeasurementData-25366 (1).csv')
+
+# Convert df_mhm to GeoDataFrame for mosquito data
+mosquito = gpd.GeoDataFrame(
+    df_mhm, geometry=gpd.points_from_xy(df_mhm['longitude'], df_mhm['latitude']), crs="EPSG:4326"
+)
+
+# Get all GLOBE mosquito data within the state
+mosquito_state = gpd.sjoin(mosquito, state, how="inner", predicate='intersects') \
+          .drop(columns=['index_right']) \
+          .reset_index(drop=True)
+
+# Add county boundaries to the map
+folium.GeoJson(
+    state_counties.to_json(),
+    name='County Boundaries',
+    tooltip=folium.features.GeoJsonTooltip(fields=['NAMELSAD'], aliases=['County:']),
+    style_function=lambda feature: {
+        'fillColor': 'transparent',
+        'color': 'grey',
+        'weight': 1
+    }
+).add_to(map)
+
+# Add each point as a green circle on the map
+for idx, row in mosquito_state.iterrows():
+    popup_content = f"<b>Date:</b> {row['MeasuredDate']}<br><b>Water Source:</b> {row['WaterSourceType']}<br><b>Longitude:</b> {row['MeasurementLongitude']}<br><b>Latitude:</b> {row['MeasurementLatitude']}"
+    folium.CircleMarker(
+        location=[row.geometry.y, row.geometry.x],
+        popup=folium.Popup(popup_content, max_width=300),
+        radius=6,
+        color='black',
+        weight=1,
+        fillColor='lightgreen',
+        fillOpacity=0.5
+    ).add_to(map)
+
+# Add an option to hide the county boundaries
+folium.LayerControl().add_to(map)
+
+# Zoom to the state
+minx, miny, maxx, maxy = state.bounds.values[0]
+bounds = [[miny, minx], [maxy, maxx]]
+map.fit_bounds(bounds)
+
+# Display the map
+display(map)
+
+county_name = "Miami-Dade County"
+
+county = state_counties.loc[counties['NAMELSAD'] == county_name]
+county.plot()
+
+data_county = mosquito.sjoin(county, how="inner", predicate="within")
+
+num_total = len(data_county)
+
+print(f"There were {num_total} GLOBE points recorded within {county_name} from 2018-2024 by community scientists.")
+
+num_eliminated = len(data_county[data_county['BreedingGroundEliminated'] == 'true'])
+print()
+print(f"Of those points, {num_eliminated} ({round(num_eliminated * 100 / num_total)}%) were successfully mitigated by the community scientists, which reduces the risk for mosquitoes inhabiting that location in the future.")
+
+data_county.head()
+
+# Add a new column for year
+data_county['MeasuredYear'] = data_county['MeasuredAt'].dt.year
+
+# Make histogram of mosquito sightings each year
+years = data_county[['SiteId', 'MeasuredYear']].groupby('MeasuredYear', as_index=False).count()
+plt.bar(years['MeasuredYear'], years['SiteId'])
+plt.title("Mosquito Sightings by Year", loc = 'left')
+plt.title(county_name, loc = 'right')
+plt.show()
+
+#Get counts of each water source (general)
+types = data_county[['SiteId', 'WaterSourceType']].groupby('WaterSourceType', as_index=False).count().sort_values(by='SiteId', ascending=False)
+
+# Select top 3 categories and group the rest into 'Other'
+top_n = 3
+if len(types) > top_n:
+    top_types = types.head(top_n)
+    other_count = types.iloc[top_n:]['SiteId'].sum()
+    other_row = pd.DataFrame({'WaterSourceType': ['Other'], 'SiteId': [other_count]})
+    types_for_pie_general = pd.concat([top_types, other_row], ignore_index=True)
+else:
+    types_for_pie_general = types
+
+# Create pie chart
+plt.figure(figsize=(5, 5))
+patches, texts, autotexts = plt.pie(x = types_for_pie_general['SiteId'],
+                         colors = sns.color_palette('Set2'),
+                         autopct='%1.1f%%')
+plt.title(f"GLOBE Mosquito Sightings in {county_name}: Water Source Types (General)")
+plt.legend(patches, types_for_pie_general['WaterSourceType'],
+           loc = 'center left', bbox_to_anchor=(1, 0.5), frameon=False)
+plt.show()
+# Get counts of each water source (specific)
+types = data_county[['SiteId', 'WaterSource']].groupby('WaterSource', as_index=False).count().sort_values(by='SiteId', ascending=False)
+
+# Select top 3 categories and group the rest into 'Other'
+top_n = 3
+if len(types) > top_n:
+    top_types = types.head(top_n)
+    other_count = types.iloc[top_n:]['SiteId'].sum()
+    other_row = pd.DataFrame({'WaterSource': ['Other'], 'SiteId': [other_count]})
+    types_for_pie_specific = pd.concat([top_types, other_row], ignore_index=True)
+else:
+    types_for_pie_specific = types
+
+# Create pie chart
+plt.figure(figsize=(5, 5))
+patches, texts, autotexts = plt.pie(x = types_for_pie_specific['SiteId'],
+                         colors = sns.color_palette('Set2'),
+                         autopct='%1.1f%%')
+plt.title(f"GLOBE Mosquito Sightings in {county_name}: Water Source Types (Specific)")
+plt.legend(patches, types_for_pie_specific['WaterSource'],
+           loc = 'center left', bbox_to_anchor=(1, 0.5), frameon=False)
+plt.show()
+
+county_name = "Broward County"
+
+county = state_counties.loc[counties['NAMELSAD'] == county_name]
+county.plot()
+
+data_county = mosquito.sjoin(county, how="inner", predicate="within")
+
+num_total = len(data_county)
+
+print(f"There were {num_total} GLOBE points recorded within {county_name} from 2018-2024 by community scientists.")
+
+num_eliminated = len(data_county[data_county['BreedingGroundEliminated'] == 'true'])
+print()
+print(f"Of those points, {num_eliminated} ({round(num_eliminated * 100 / num_total)}%) were successfully mitigated by the community scientists, which reduces the risk for mosquitoes inhabiting that location in the future.")
+
+data_county.head()
+
+# Add a new column for year
+data_county['MeasuredYear'] = data_county['MeasuredAt'].dt.year
+
+# Make histogram of mosquito sightings each year
+years = data_county[['SiteId', 'MeasuredYear']].groupby('MeasuredYear', as_index=False).count()
+plt.bar(years['MeasuredYear'], years['SiteId'])
+plt.title("Mosquito Sightings by Year", loc = 'left')
+plt.title(county_name, loc = 'right')
+plt.show()
+
+#Get counts of each water source (general)
+types = data_county[['SiteId', 'WaterSourceType']].groupby('WaterSourceType', as_index=False).count().sort_values(by='SiteId', ascending=False)
+
+# Select top 3 categories and group the rest into 'Other'
+top_n = 3
+if len(types) > top_n:
+    top_types = types.head(top_n)
+    other_count = types.iloc[top_n:]['SiteId'].sum()
+    other_row = pd.DataFrame({'WaterSourceType': ['Other'], 'SiteId': [other_count]})
+    types_for_pie_general = pd.concat([top_types, other_row], ignore_index=True)
+else:
+    types_for_pie_general = types
+
+# Create pie chart
+plt.figure(figsize=(5, 5))
+patches, texts, autotexts = plt.pie(x = types_for_pie_general['SiteId'],
+                         colors = sns.color_palette('Set2'),
+                         autopct='%1.1f%%')
+plt.title(f"GLOBE Mosquito Sightings in {county_name}: Water Source Types (General)")
+plt.legend(patches, types_for_pie_general['WaterSourceType'],
+           loc = 'center left', bbox_to_anchor=(1, 0.5), frameon=False)
+plt.show()
+# Get counts of each water source (specific)
+types = data_county[['SiteId', 'WaterSource']].groupby('WaterSource', as_index=False).count().sort_values(by='SiteId', ascending=False)
+
+# Select top 3 categories and group the rest into 'Other'
+top_n = 3
+if len(types) > top_n:
+    top_types = types.head(top_n)
+    other_count = types.iloc[top_n:]['SiteId'].sum()
+    other_row = pd.DataFrame({'WaterSource': ['Other'], 'SiteId': [other_count]})
+    types_for_pie_specific = pd.concat([top_types, other_row], ignore_index=True)
+else:
+    types_for_pie_specific = types
+
+# Create pie chart
+plt.figure(figsize=(5, 5))
+patches, texts, autotexts = plt.pie(x = types_for_pie_specific['SiteId'],
+                         colors = sns.color_palette('Set2'),
+                         autopct='%1.1f%%')
+plt.title(f"GLOBE Mosquito Sightings in {county_name}: Water Source Types (Specific)")
+plt.legend(patches, types_for_pie_specific['WaterSource'],
+           loc = 'center left', bbox_to_anchor=(1, 0.5), frameon=False)
+plt.show()
+
+state_name = "Your State Name"
+
+# For example,
+# state_name = "Florida"
+# Load county boundaries
+counties = gpd.read_file('https://github.com/geo-di-lab/emerge-lessons/raw/refs/heads/main/docs/data/us_counties.zip').to_crs('EPSG:4326')
+
+# Filter to all counties in state
+state_counties = counties.loc[counties['STATE_NAME'] == state_name]
+
+# Get state boundary by combining the counties together
+state = state_counties[['geometry']].dissolve()
+
+state.plot()
+# Create empty map zoomed to the state
+map = folium.Map(tiles="Cartodb dark_matter")
+
+# Get all GLOBE mosquito data within the state
+mosquito_state = gpd.sjoin(mosquito, state, how="inner", predicate='intersects') \
+          .drop(columns=['index_right']) \
+          .reset_index(drop=True)
+
+# Add county boundaries to the map
+folium.GeoJson(
+    state_counties.to_json(),
+    name='County Boundaries',
+    tooltip=folium.features.GeoJsonTooltip(fields=['NAMELSAD'], aliases=['County:']),
+    style_function=lambda feature: {
+        'fillColor': 'transparent',
+        'color': 'grey',
+        'weight': 1
+    }
+).add_to(map)
+
+# Add each point as a green circle on the map
+for idx, row in mosquito_state.iterrows():
+    popup_content = f"<b>Date:</b> {row['MeasuredDate']}<br><b>Water Source:</b> {row['WaterSourceType']}<br><b>Longitude:</b> {row['MeasurementLongitude']}<br><b>Latitude:</b> {row['MeasurementLatitude']}"
+    folium.CircleMarker(
+        location=[row.geometry.y, row.geometry.x],
+        popup=folium.Popup(popup_content, max_width=300),
+        radius=6,
+        color='black',
+        weight=1,
+        fillColor='lightgreen',
+        fillOpacity=0.5
+    ).add_to(map)
+
+# Add an option to hide the county boundaries
+folium.LayerControl().add_to(map)
+
+# Zoom to the state
+minx, miny, maxx, maxy = state.bounds.values[0]
+bounds = [[miny, minx], [maxy, maxx]]
+map.fit_bounds(bounds)
+
+# Display the map
+display(map)
+
+#Read Mosquito Habitat Mapper Data
+from google.colab import files
+file = files.upload()
+
+
+import pandas as pd
+
+#2023-05-29 - 2026-01-31
+df_mhm = pd.read_csv('GLOBEMeasurementData-25366 (1).csv')
+df_mhm.head()
+
+#2023-05-29 - 2026-01-31
+df.lc = pd.read_csv('GLOBEMeasurementData-25368 (1).csv')
+df.lc.head()
